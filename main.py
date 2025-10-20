@@ -156,6 +156,35 @@ def compute_signals(df: pd.DataFrame) -> Dict[str, Dict[str, float]]:
     return out
 
 # -----------------------
+# Market gate (SPY MA60>MA240 on 15m)
+# -----------------------
+
+def spy_uptrend_gate(df: pd.DataFrame) -> bool:
+    """
+    Returns True only if SPY's 15m MA60 > MA240 at the latest bar.
+    If SPY data is missing or insufficient, returns False (i.e., disallow buys).
+    """
+    try:
+        spy_closes = df.xs('SPY', level=0)['close'].sort_index()
+        if spy_closes.size < 240:
+            logger.info("SPY has insufficient bars for MA240; disallowing buys this cycle.")
+            return False
+        ma60 = spy_closes.rolling(window=60, min_periods=60).mean().iloc[-1]
+        ma240 = spy_closes.rolling(window=240, min_periods=240).mean().iloc[-1]
+        if math.isnan(ma60) or math.isnan(ma240):
+            logger.info("SPY MA values not ready; disallowing buys this cycle.")
+            return False
+        ok = ma60 > ma240
+        logger.info(f"SPY market gate: MA60={ma60:.4f} vs MA240={ma240:.4f} -> {'ALLOW BUYS' if ok else 'BLOCK BUYS'}")
+        return ok
+    except KeyError:
+        logger.info("SPY not found in fetched data; disallowing buys this cycle.")
+        return False
+    except Exception as e:
+        logger.warning(f"SPY uptrend gate check failed ({e}); disallowing buys this cycle.")
+        return False
+
+# -----------------------
 # Session gating
 # -----------------------
 
@@ -246,6 +275,12 @@ def run_once():
 
     df = pd.concat(all_frames).sort_index()
     sigs = compute_signals(df)
+
+    # ---- Broad market gate: require SPY 15m MA60 > MA240 to allow any buys ----
+    if not spy_uptrend_gate(df):
+        logger.info("Market gate not satisfied (SPY MA60 <= MA240). Skipping all buys this cycle.")
+        return
+    # --------------------------------------------------------------------------
 
     notional_per_trade = available_cash * 0.05
     if notional_per_trade < 1.0:
